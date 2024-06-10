@@ -1,0 +1,736 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Avance - Sistema de Recomendacion\n",
+    "## Feedback Implícito\n",
+    "## Análisis de Grandes Volúmenes de Datos\n",
+    "\n",
+    "En la entrega pasada analizamos un dataset de reviews de Steam que tenian los reviews de miles de aplicaciones sin estar asociadas a un Steam_ID específico, es decir, que solo es posible establecer un algoritmo de recomendación hasta el promedio bayesiano sin proceder a filtrado colaborativo. Se consiguió una base de datos mayor y con más puntos de información que incluyen el Steam_ID de tal forma que ahora es posible conocer los juegos que un usuario específico está reseñando en la plataforma para recomendar a otros usuarios con gustos similares."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "C:\\Users\\DanielGuzmánÁvila\\AppData\\Roaming\\Python\\Python311\\site-packages\\fuzzywuzzy\\fuzz.py:11: UserWarning: Using slow pure-python SequenceMatcher. Install python-Levenshtein to remove this warning\n",
+      "  warnings.warn('Using slow pure-python SequenceMatcher. Install python-Levenshtein to remove this warning')\n"
+     ]
+    }
+   ],
+   "source": [
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import sklearn\n",
+    "import matplotlib.pyplot as plt\n",
+    "import sklearn\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "#!pip install implicit\n",
+    "from fuzzywuzzy import process\n",
+    "\n",
+    "import implicit\n",
+    "from implicit.als import AlternatingLeastSquares\n",
+    "from scipy.sparse import csr_matrix\n",
+    "\n",
+    "import warnings\n",
+    "warnings.simplefilter(action='ignore', category=FutureWarning)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### El primer paso consiste en hacer los dataframes (uno de los ratings y otro de los juegos) y hacer una limpieza para eliminar NaN, Null y reviews con sospecha de fraude "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Abre el archivo original\n",
+    "steam_ratings = pd.read_csv(\"archive/steam_reviews.csv\", usecols=['app_id', 'app_name', 'author.playtime_forever', 'author.steamid']) \n",
+    "# Tira los valores nulos y na\n",
+    "steam_ratings = steam_ratings.dropna()\n",
+    "# Solo nos traemos informacion de jugadores que hayan jugado más de tres horas \n",
+    "steam_ratings = steam_ratings[steam_ratings['author.playtime_forever'] >= 3]\n",
+    "\n",
+    "# Creamos una lista con el ID de steam y el nombre del juego \n",
+    "steam_games = steam_ratings[['app_id', 'app_name']].drop_duplicates()\n",
+    "# Esta ultima línea no se usa normalmente, solo es para guardar la lista de juegos como archivo y revisar el output en Excel\n",
+    "#steam_games.to_csv(\"archive/steam_games.csv\", index=False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>app_id</th>\n",
+       "      <th>app_name</th>\n",
+       "      <th>author.steamid</th>\n",
+       "      <th>author.playtime_forever</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>292030</td>\n",
+       "      <td>The Witcher 3: Wild Hunt</td>\n",
+       "      <td>76561199095369542</td>\n",
+       "      <td>1909.0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>292030</td>\n",
+       "      <td>The Witcher 3: Wild Hunt</td>\n",
+       "      <td>76561198949504115</td>\n",
+       "      <td>2764.0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>292030</td>\n",
+       "      <td>The Witcher 3: Wild Hunt</td>\n",
+       "      <td>76561199090098988</td>\n",
+       "      <td>1061.0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>292030</td>\n",
+       "      <td>The Witcher 3: Wild Hunt</td>\n",
+       "      <td>76561199054755373</td>\n",
+       "      <td>5587.0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>292030</td>\n",
+       "      <td>The Witcher 3: Wild Hunt</td>\n",
+       "      <td>76561199028326951</td>\n",
+       "      <td>217.0</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   app_id                  app_name     author.steamid  \\\n",
+       "0  292030  The Witcher 3: Wild Hunt  76561199095369542   \n",
+       "1  292030  The Witcher 3: Wild Hunt  76561198949504115   \n",
+       "2  292030  The Witcher 3: Wild Hunt  76561199090098988   \n",
+       "3  292030  The Witcher 3: Wild Hunt  76561199054755373   \n",
+       "4  292030  The Witcher 3: Wild Hunt  76561199028326951   \n",
+       "\n",
+       "   author.playtime_forever  \n",
+       "0                   1909.0  \n",
+       "1                   2764.0  \n",
+       "2                   1061.0  \n",
+       "3                   5587.0  \n",
+       "4                    217.0  "
+      ]
+     },
+     "execution_count": 6,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "steam_ratings.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>app_id</th>\n",
+       "      <th>app_name</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>292030</td>\n",
+       "      <td>The Witcher 3: Wild Hunt</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>469395</th>\n",
+       "      <td>70</td>\n",
+       "      <td>Half-Life</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>526715</th>\n",
+       "      <td>240</td>\n",
+       "      <td>Counter-Strike: Source</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>644796</th>\n",
+       "      <td>420</td>\n",
+       "      <td>Half-Life 2: Episode Two</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>668296</th>\n",
+       "      <td>620</td>\n",
+       "      <td>Portal 2</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "        app_id                  app_name\n",
+       "0       292030  The Witcher 3: Wild Hunt\n",
+       "469395      70                 Half-Life\n",
+       "526715     240    Counter-Strike: Source\n",
+       "644796     420  Half-Life 2: Episode Two\n",
+       "668296     620                  Portal 2"
+      ]
+     },
+     "execution_count": 7,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "steam_games.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "<class 'pandas.core.frame.DataFrame'>\n",
+      "Index: 21746584 entries, 0 to 21747370\n",
+      "Data columns (total 4 columns):\n",
+      " #   Column                   Dtype  \n",
+      "---  ------                   -----  \n",
+      " 0   app_id                   int64  \n",
+      " 1   app_name                 object \n",
+      " 2   author.steamid           int64  \n",
+      " 3   author.playtime_forever  float64\n",
+      "dtypes: float64(1), int64(2), object(1)\n",
+      "memory usage: 829.6+ MB\n"
+     ]
+    }
+   ],
+   "source": [
+    "steam_ratings.info()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "<class 'pandas.core.frame.DataFrame'>\n",
+      "Index: 315 entries, 0 to 21696272\n",
+      "Data columns (total 2 columns):\n",
+      " #   Column    Non-Null Count  Dtype \n",
+      "---  ------    --------------  ----- \n",
+      " 0   app_id    315 non-null    int64 \n",
+      " 1   app_name  315 non-null    object\n",
+      "dtypes: int64(1), object(1)\n",
+      "memory usage: 7.4+ KB\n"
+     ]
+    }
+   ],
+   "source": [
+    "steam_games.info()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "app_id                     0\n",
+      "app_name                   0\n",
+      "author.steamid             0\n",
+      "author.playtime_forever    0\n",
+      "dtype: int64\n",
+      "##################\n",
+      "app_id      0\n",
+      "app_name    0\n",
+      "dtype: int64\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(steam_ratings.isna().sum())\n",
+    "print('##################')\n",
+    "print(steam_games.isna().sum())"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "* Descripción de los campos\n",
+    "\n",
+    "Steam Reviews Dataset 2021. (2021, 25 enero). Kaggle. https://www.kaggle.com/datasets/najzeko/steam-reviews-2021\n",
+    "\n",
+    "| Campo| Descripción| \n",
+    "|------|------|                \n",
+    "| app_id | ID en steam del aplicativo                         \n",
+    "| app_name | Nombre del aplicativo                          \n",
+    "| author.steamid | Cuenta anonimizada de steam de quien deja la reseña                        \n",
+    "| author.playtime_forever | Tiempo total jugado                \n",
+    "\n",
+    "* Para este ejercicio vamos a considerar que las horas totales jugadas son una especie de ranking implícito. Ejemplo: Si un jugador jugó 50 horas Rocket League y otro 10 horas el primer jugador tiene una mejor opinión de Rocket League que el segundo\n",
+    "* Similar al dataset de Movielens existen relanzamientos, sin embargo, la gran mayoría de los relanzamientos incluyen mejoras en el funcionamiento del aplicativo o son una versión completamente distinta con la misma historia pero diseñado para hardware más nuevo. Por esta razón no vamos a eliminar títulos duplicados"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### El segundo paso consiste en hacer una matriz dispersa con los jugadores y los juegos como dimensiones, la intersección sería el tiempo jugado total"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def create_X(df: pd.DataFrame):\n",
+    "    \n",
+    "    N = df['author.steamid'].nunique()\n",
+    "    M = df['app_id'].nunique()\n",
+    "\n",
+    "    user_mapper = dict(zip(np.unique(df[\"author.steamid\"]), list(range(N))))\n",
+    "    game_mapper = dict(zip(np.unique(df[\"app_id\"]), list(range(M))))\n",
+    "    \n",
+    "    user_inv_mapper = dict(zip(list(range(N)), np.unique(df[\"author.steamid\"])))\n",
+    "    game_inv_mapper = dict(zip(list(range(M)), np.unique(df[\"app_id\"])))\n",
+    "    \n",
+    "    user_index = [user_mapper[i] for i in df['author.steamid']]\n",
+    "    game_index = [game_mapper[i] for i in df['app_id']]\n",
+    "\n",
+    "    X = csr_matrix((df[\"author.playtime_forever\"], (game_index, user_index)), shape=(M, N))\n",
+    "    \n",
+    "    return X, user_mapper, game_mapper, user_inv_mapper, game_inv_mapper"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "  (0, 0)\t407.0\n",
+      "  (0, 16)\t8803.0\n",
+      "  (0, 61)\t38.0\n",
+      "  (0, 246)\t842.0\n",
+      "  (0, 361)\t89.0\n",
+      "  (0, 372)\t252.0\n",
+      "  (0, 396)\t994.0\n",
+      "  (0, 408)\t4636.0\n",
+      "  (0, 749)\t80.0\n",
+      "  (0, 780)\t838.0\n",
+      "  (0, 795)\t1063.0\n",
+      "  (0, 806)\t7.0\n",
+      "  (0, 829)\t475.0\n",
+      "  (0, 916)\t4438.0\n",
+      "  (0, 982)\t293528.0\n",
+      "  (0, 1053)\t12523.0\n",
+      "  (0, 1075)\t902.0\n",
+      "  (0, 1140)\t139026.0\n",
+      "  (0, 1189)\t296498.0\n",
+      "  (0, 1208)\t1165.0\n",
+      "  (0, 1217)\t389.0\n",
+      "  (0, 1226)\t2269.0\n",
+      "  (0, 1390)\t4080.0\n",
+      "  (0, 1461)\t71308.0\n",
+      "  (0, 1464)\t12.0\n",
+      "  :\t:\n",
+      "  (314, 12359517)\t188.0\n",
+      "  (314, 12360071)\t291.0\n",
+      "  (314, 12360078)\t1556.0\n",
+      "  (314, 12361040)\t817.0\n",
+      "  (314, 12361146)\t198.0\n",
+      "  (314, 12361706)\t603.0\n",
+      "  (314, 12361925)\t1268.0\n",
+      "  (314, 12366182)\t196.0\n",
+      "  (314, 12368945)\t46.0\n",
+      "  (314, 12376723)\t1050.0\n",
+      "  (314, 12377191)\t263.0\n",
+      "  (314, 12379227)\t127.0\n",
+      "  (314, 12380001)\t45.0\n",
+      "  (314, 12380595)\t220.0\n",
+      "  (314, 12392580)\t196.0\n",
+      "  (314, 12396667)\t1286.0\n",
+      "  (314, 12397064)\t1636.0\n",
+      "  (314, 12399051)\t383.0\n",
+      "  (314, 12399187)\t52.0\n",
+      "  (314, 12399871)\t315.0\n",
+      "  (314, 12402077)\t242.0\n",
+      "  (314, 12403938)\t60.0\n",
+      "  (314, 12404287)\t276.0\n",
+      "  (314, 12404614)\t32.0\n",
+      "  (314, 12405310)\t740.0\n"
+     ]
+    }
+   ],
+   "source": [
+    "X, user_mapper, game_mapper, user_inv_mapper, game_inv_mapper = create_X(steam_ratings)\n",
+    "print(X)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### A continuación escribimos las funciones para construir los mapas de los nombres de los juegos y busqueda de strings similares  "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 17,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def game_finder(title):\n",
+    "    all_titles = steam_games['app_name'].tolist()\n",
+    "    closest_match = process.extractOne(title,all_titles)\n",
+    "    return closest_match[0]\n",
+    "\n",
+    "game_title_mapper = dict(zip(steam_games['app_name'], steam_games['app_id']))\n",
+    "game_title_inv_mapper = dict(zip(steam_games['app_id'], steam_games['app_name']))\n",
+    "\n",
+    "def get_game_index(title):\n",
+    "    fuzzy_title = game_finder(title)\n",
+    "    game_id = game_title_mapper[fuzzy_title]\n",
+    "    game_idx = game_mapper[game_id]\n",
+    "    return game_idx\n",
+    "\n",
+    "\n",
+    "def get_game_title(game_idx): \n",
+    "    game_id = game_inv_mapper[game_idx]\n",
+    "    title = game_title_inv_mapper[game_id]\n",
+    "    return title \n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Probamos con un título aproximado de un juego"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 19,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "79\n",
+      "The Witcher 3: Wild Hunt\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(get_game_index('witcher'))\n",
+    "print(get_game_title(79))\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### El siguiente paso es entrenar el modelo  "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 20,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "C:\\Users\\DanielGuzmánÁvila\\AppData\\Roaming\\Python\\Python311\\site-packages\\implicit\\cpu\\als.py:95: RuntimeWarning: Intel MKL BLAS is configured to use 10 threads. It is highly recommended to disable its internal threadpool by setting the environment variable 'MKL_NUM_THREADS=1' or by callng 'threadpoolctl.threadpool_limits(1, \"blas\")'. Having MKL use a threadpool can lead to severe performance issues\n",
+      "  check_blas_config()\n",
+      "C:\\Users\\DanielGuzmánÁvila\\AppData\\Roaming\\Python\\Python311\\site-packages\\implicit\\cpu\\als.py:95: RuntimeWarning: OpenBLAS is configured to use 12 threads. It is highly recommended to disable its internal threadpool by setting the environment variable 'OPENBLAS_NUM_THREADS=1' or by calling 'threadpoolctl.threadpool_limits(1, \"blas\")'. Having OpenBLAS use a threadpool can lead to severe performance issues here.\n",
+      "  check_blas_config()\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "4bdd256230e84af5a66224a8bc8df69f",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "  0%|          | 0/15 [00:00<?, ?it/s]"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "model = implicit.als.AlternatingLeastSquares(factors=50)\n",
+    "model.fit(X.T.tocsr())"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Podemos hacer una prueba con Rocket League "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 23,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(array([ 54,  17,  16, 196,   1, 208, 101,  52,   5,  96]),\n",
+       " array([1.        , 0.8057992 , 0.8010802 , 0.7970826 , 0.79685163,\n",
+       "        0.78789794, 0.78069323, 0.76943725, 0.7691637 , 0.7667666 ],\n",
+       "       dtype=float32))"
+      ]
+     },
+     "execution_count": 23,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "game_of_interest = 'rocket league'\n",
+    "\n",
+    "game_index = get_game_index(game_of_interest)\n",
+    "related = model.similar_items(game_index)\n",
+    "related"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 24,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Por que jugaste Rocket League te pueden interesar los siguientes juegos:\n",
+      "Terraria\n",
+      "The Elder Scrolls V: Skyrim\n",
+      "PLAYERUNKNOWN'S BATTLEGROUNDS\n",
+      "Counter-Strike: Source\n",
+      "Total War: WARHAMMER II\n",
+      "Tom Clancy's Rainbow Six Siege\n",
+      "The Binding of Isaac: Rebirth\n",
+      "Garry's Mod\n",
+      "ARK: Survival Evolved\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(f\"Por que jugaste {game_finder(game_of_interest)} te pueden interesar los siguientes juegos:\")\n",
+    "for t, r in zip(related[0], related[1]):\n",
+    "    \n",
+    "    recommended_title = get_game_title(t)\n",
+    "    if recommended_title != game_finder(game_of_interest):\n",
+    "        print(recommended_title)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Hagamos una prueba Rainbow 6 a ver si nos salen titulos similares"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 29,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Por que jugaste Tom Clancy's Rainbow Six Siege te pueden interesar los siguientes juegos:\n",
+      "Rocket League\n",
+      "Terraria\n",
+      "The Elder Scrolls V: Skyrim\n",
+      "PLAYERUNKNOWN'S BATTLEGROUNDS\n",
+      "Counter-Strike: Source\n",
+      "Total War: WARHAMMER II\n",
+      "The Binding of Isaac: Rebirth\n",
+      "Garry's Mod\n",
+      "ARK: Survival Evolved\n"
+     ]
+    }
+   ],
+   "source": [
+    "game_of_interest = 'rainbow six'\n",
+    "\n",
+    "print(f\"Por que jugaste {game_finder(game_of_interest)} te pueden interesar los siguientes juegos:\")\n",
+    "for t, r in zip(related[0], related[1]):\n",
+    "    \n",
+    "    recommended_title = get_game_title(t)\n",
+    "    if recommended_title != game_finder(game_of_interest):\n",
+    "        print(recommended_title)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Como último paso generamos recomendaciones por usuario"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "El numero de juegos reseñados por el Usuario 76561198149550625 es de: 6\n"
+     ]
+    }
+   ],
+   "source": [
+    "user_id = 76561198149550625\n",
+    "\n",
+    "user_ratings = steam_ratings[steam_ratings['author.steamid']==user_id].merge(steam_games[['app_id', 'app_name']])\n",
+    "user_ratings = user_ratings.sort_values('author.playtime_forever', ascending=False)\n",
+    "print(f\"El numero de juegos reseñados por el Usuario {user_id} es de: {user_ratings['app_id'].nunique()}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 44,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Assassin's Creed Odyssey\n",
+      "MORDHAU\n",
+      "The Forest\n",
+      "PAYDAY 2\n",
+      "Counter-Strike: Source\n",
+      "Factorio\n",
+      "ARK: Survival Evolved\n",
+      "Rust\n",
+      "Sid Meier's Civilization VI\n",
+      "Age of Empires II (2013)\n"
+     ]
+    }
+   ],
+   "source": [
+    "X_t = X.T.tocsr()\n",
+    "user_idx = user_mapper[user_id]\n",
+    "recommendations = model.recommend(user_idx, X_t[user_idx])\n",
+    "recommendations\n",
+    "\n",
+    "for t, r in zip(recommendations[0], recommendations[1]):\n",
+    "    recommended_title = get_game_title(t)\n",
+    "    print(recommended_title)"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "base",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.7"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
